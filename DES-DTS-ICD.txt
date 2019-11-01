@@ -1,0 +1,509 @@
+
+
+			  DECam DES/SISPI - DTS
+		     Interface Control Document (ICD)
+
+
+
+Purpose of this Document
+
+    This is the Interface Control Document for the SISPI and DES Pipeline
+interfaces to the NOAO Data Transport System (DTS).  We describe both
+the requirements and expectations for the SISPI interface that puts data
+into the DTS system, and the delivery mechanism for DES components that
+receive transported data.
+
+
+
+1) Introduction
+
+	The NOAO Data Transport System (DTS) is designed to replace
+the existing lpd/SRB based transport infrastructure within the NOAO
+E2E system of archives, pipelines and data acquisition systems.  A new
+transport system is required to handle the increased data flow expected
+from future instruments (such as DECam and ODI), to better manage network
+resources, and to better handle the E2E interfaces to external projects.
+This document will give an overview of the DTS system and then discuss
+how it interfaces with specific components of the DES, and what the
+responsibilities and requirements are of the projects involved.
+
+	Some elements of the DTS design were influenced by the specific
+needs of DES, however DTS also has other uses within the E2E system and
+is not directly a part of DES or SISPI development efforts.  Because the
+network is a resource shared with the rest of the observatory and DTS
+provides a means of managing that resource, configuration and operation
+of the DTS system will primarily be handled by NOAO staff.  Coordination
+with DES developers will ensure DTS is properly configured to meet DES
+requirements in the data-taking environment.
+
+	DTS provides a general transport capability that may be useful
+in a variety of situations within DES/DECam projects, however our primary
+concern in this ICD is with the transport of data only after it is acquired
+by DECam.  NOAO will assist developers who wish to use DTS for other
+purposes (e.g. for engineering activities between groups, operational
+use within non-observing parts of DES, etc) but maintaining and operating
+these separate transport networks is the responsibility of the user.
+
+
+
+2) Overview of the DTS System
+
+	The DTS is a collection of tasks designed to run collaboratively
+at sites within the transport network; these sites include the KPNO and
+CTIO mountaintops, archive/operations centers in Tucson and La Serena,
+a deep-store facility at NCSA and sites associated with the Dark Energy
+Survey (DES) and/or DECam Project.  DTS uses an XML-RPC architecture to
+eliminate the need for persistent connections between the sites, allowing
+each site to provide or consume services within the DTS network only as
+needed.  The RPC architecture also permits remote control and monitoring
+of the system or an individual site (e.g. to enable a new data queue,
+manually transfer a file, or collect logging information at a central
+operations point).
+
+	The DTS service daemon is highly multi-threaded and capable of
+managing many different data paths and scheduling priorities, each of
+which can be easily configured or extended as needed.  Bulk data transport
+is independent of the primary command-and-control methods; a variety of
+transfer protocols can be supported to take best advantage of the bandwidth
+or properties of the data being moved (e.g. single large image versus many
+small files).  The default transport method uses parallel TCP/IP sockets to
+"stripe" the data to a remote machine, providing a significant improvement
+in throughput over slow or busy networks.  Additional transport protocols
+may be added in the future if needed.  Arbitrary execution of DTS ingest
+and delivery applications further separate transport from its boundary uses.
+
+	Data transport may be configured as either "queued" or
+"point-to-point".  In the case of queued transport, data are placed in a
+named data queue that defines the route of the data through the DTS system,
+files are delivered to each of the sites in the named queue that are
+"downstream" of the DTS submission site.  Point-to-point transport allows
+for an ad-hoc transport of data between any two arbitrary nodes in the
+transport network, or from a local machine to any remote machine running
+a DTS service daemon.  In either case, data may be "split" and sent to
+two or more sites in parallel (e.g. a P2P transport can be configured to
+send data to engineering teams at separate sites simultaneously).
+
+The DTS system is made up of the following applications:
+
+    DTSD    The DTS Daemon is the main service daemon running at each
+	    site.  It supplies all DTS services on the machine and is 
+	    responsible for managing the transport queues.  DTSD provides 
+	    a sandboxed filesystem view for security and can be run as 
+            xinetd service or entirely in user-space.  Set/Get methods 
+	    permit remote management and control from a central location.
+	    The DTSD requires at least that the RPC command port be open 
+	    to the network firewall.
+
+	    *** A DTSD is required to be running at any DES site that
+	        receives data from the DTS.
+
+    DTSQ    The DTS Queueing Agent submits data for ingestion into the DTS
+	    system.  It allows a quick response so it won't block caller
+	    and provides its own transport methods to move data to a
+	    remote DTSD.  The DTSQ logs all requests and verifies DTS
+	    status before allowing transfer.  DTSQ permits recovery of
+	    failed requests for later re-queueing and leaves a 'token'
+	    file with details of transfer on success or information needed
+	    to recover on failure.
+
+	    *** A DTSQ is required to be available on the DES 3-Day store 
+	        machine to submit data to the DTS after image acquisition.
+
+    DTSH    The DTS utility shell allows direct interaction with DTSD
+	    running at any site.  It may be used to issue simple commands
+	    from the user prompt and provides a scripting capability for
+	    DTS commands.  DTSH is not required for routine use of DTS.
+
+    DTSMON  The DTS Monitor is a simple monitoring application that prints
+	    or logs messages generated by remote DTS applications.
+	    It runs on a reserved port and is intended for Operations use,
+	    it is not required for routine use of DTS.
+
+
+
+2.1) Queues and Data Paths
+
+	Data queues are defined in the configuration file used by a
+site (or in a master file common to all sites).  The route of the data on
+a particular queue defines all sites to which the data will be delivered,
+the configuration file also defines how data are delivered at each site
+(see below) and what network parameters to use on each leg of the trip.
+This method allows transport to be tuned over a variety of network
+environments and interact with external entities (e.g. the DES pipeline)
+in a site-specific manner.
+
+	Data may share a common route but require different delivery
+actions; In this case a separate queue may be named with different
+parameters, or a single queue may be used and it is up to the delivery
+mechanism to sort the data by some means.  An example of this case would be
+the delivery of DES and SN survey data where it isn't clear the endpoints
+will necessarily be the same.
+
+	DTS guarantees both the integrity of the data at each site as well
+as order of delivery of objects on each queue.	Because queues can be
+allocated network resources differently, there is however no guarantee
+about the delivery order between queues.
+
+Data queues come in three types:
+
+    Standard	A queue which operates whenever there is data to be
+		processed.   Data are processed in the order in which
+		they were placed in the queue.
+
+    Scheduled	A queue which is triggered either at regular intervals
+		or at fixed time periods.  All data in the queue at the
+		time it is triggered will be processed.
+
+    Priority	A queue which temporarily blocks all other queue trans-
+		actions, allowing all available network resources to be
+		dedicated to processing this queue.  This is not a normal
+		configuration, we expect this to be used only for highly
+		time-critical transfers and only at the explicit request
+		of an operator.
+
+We expect that data-taking will normally make use of a Standard queue type
+to transport data as it is acquired.  Scheduled queues are likely to be used
+by operations staff to collect daily logs or perform routine maintenance.
+
+
+
+2.2) Transport Models
+
+	DTS must be able to negotiate a variety of network configurations
+and firewalls and so provides a matrix of transport models to define both
+the direction of transport as well as which end of the connection is
+responsible for supplying the transport sockets.
+
+These transport models include:
+
+    PUSH	RPC command sent to site A to transport to site B, where
+			site B supplies the sockets
+    GIVE	RPC command sent to site A to transport to site B, where
+			site A supplies the sockets
+
+    PULL	RPC command sent to site B to transport to site A, where
+			site B supplies the sockets
+    TAKE	RPC command sent to site B to transport to site A, where
+			site A supplies the sockets
+
+For example, the PUSH and GIVE models both define the direction of transport
+from A to B:  In the PUSH model we assume that a DTS site providing a PUSH
+service is also willing to provide the socket resources to support the
+queue, whereas in a GIVE model we are willing to provide those resources
+ourselves in order to transport the data.  The PULL/TAKE works on the
+same assumptions but defines a transfer in the opposite direction.
+
+	These different models permit us to work around restrictive
+firewalls where only the RPC command port is publicly visible and
+opening a range of transport sockets is considered a security risk.
+So long as the one site is willing to supply the open sockets, transport
+can occur.  
+
+	The definition on the transport model used along each leg of 
+a data path is defined in the DTS configuration file.  For example,
+assuming the DES site at NCSA allows only the RPC command port to be
+exposed we can configure transport from Chile-NCSA using a GIVE model
+and from NCSA-Tucson using a PUSH model, putting the burden of providing
+transport sockets on the NOAO side entirely.  In such a case, the DTS at
+NCSA is only ever making out-going socket connections to transport the
+data in and out of the local network.
+
+
+
+2.3) Data Flow
+
+	All data acquired with DECam will be transferred from the
+'DES 3-Day Store' to the CTIO "mountain cache" DTS system. This initial
+transfer is accomplished with the DTSQ application using the GIVE model
+to transfer the data for submission to the named queue.
+
+	The DTS system then invokes the "Ingest Application" to add
+necessary keywords and perform other processing necessary to make the
+first archival copy of the image.  Note that at this point the image has
+been modified since it was first acquired, however this version will be
+guaranteed to be identical to all future copies made during the transfer.
+At this point the DTS queue manager processes all data awaiting transfer
+in the named queue, data are processed in the order they were received.
+Data are transferred down the mountain to La Serena where a copy is
+deposited in the NOAO-South archive mirror.
+
+	For Community data, files are transferred on the same queue from
+La Serena to Tucson where they are ingested in the NOAO-North archive.
+For DES data, files are transferred from La Serena to the designated
+machine at NCSA for delivery to the DES pipeline.  (Miltiple DES queues
+might follow this same path but differ only in the delivery mechanism).
+Following successful delivery to DES, data move on the same queue from
+NCSA to Tucson for ingestion in the NOAO-North archive.
+
+
+
+2.4) Submitting Data to DTS
+
+	Data are submitted to the DTS system using the DTSQ application.
+A typical invocation would look something like
+
+	dtsq -q des -f /path/image001.fits
+
+where the '-q des' specifies a submission to the 'des' queue, and the
+'-f' flag requests that the task run in "fast" mode, i.e. that it return
+a status code to the caller as soon as possible rather than after all the
+required processing has completed.  In fast mode, the task first validates
+a connection to the DTS daemon (which is named along with other parameters
+in a '.dtsq_config' configuration file in the user's $HOME directory, an
+environment variable or as a commandline flag), that the named queue is
+valid and willing to accept the file.  If these tests all pass, the task
+returns an OK status code in under a second and processing (i.e. checksum
+computation and transfer to the DTS daemon) continues in the background.
+
+	Upon successful submission to the DTS, a 'token' file is left
+on the calling machine with the details of the transfer.  If an error
+occurs either during the initial validation checks or the background
+submission, an entry is made in a recovery file that can later be used to
+re-submit the file.  A ".dtsq" directory in the user's $HOME directory by
+default (it may be configured with DTSQ commandline flags or environment
+variables) is created with subdirectories for each queue utilized, this
+queue subdirectory contains the submission log as well as the recovery
+file and token directory. The token directory mirrors the path to the
+submitted file meaning one could simply walk the token directory tree
+to determine which files have been submitted and when.	Similarly, the
+recovery file can be checked to ensure that all files have been properly
+transferred to the DTS.
+
+
+
+2.5) Delivery Mechanisms
+
+	To avoid having any specific knowledge of systems receiving the
+data, DTS provides two delivery models:
+
+	1)  Data are deposited in a directory named in the configuration
+	    file.  This step is required when configuring a queue.
+
+	2)  An external application can be executed at the time of delivery
+	    to perform some action on the file (e.g. to notify a pipeline
+	    or interact with a database).  This step is optional.
+
+A delivery is considered to have failed if the file cannot be copied to
+the delivery directory, or if the external application returns a non-zero
+exit code.  If the delivery directory does not exist, does not have the
+proper write permissions, or the disk is full then processing of the queue
+is halted with an ERROR condition that must be cleared by an operator
+(DTS will make notification).  Similarly, if a delivery application fails
+and operator will be notified (i.e. the named contact email in the config
+file) however processing of the queue will continue as long as the file
+can be placed in the delivery directory.
+
+	In the case of DES, coordination is required to properly configure
+the site to receive data and ensure access to the delivery application
+and directory.	DES is required to supply any external applications
+necessary to interface to their systems.
+
+
+
+2.6) Transportable Data
+
+	The DTS makes no assumptions about the format of an object to be
+transferred and will not directly attempt to read the contents of a file.
+Data integrity is guaranteed by validating the checksum on each end of
+a transfer and resending bits as needed.
+
+	Ingest or delivery applications may, however, choose to deal with
+only certain types of files and it is the responsibility of these
+applications to distinguish file types.  Applications may take one of
+three actions when invoked:
+
+ 	1)  Process the file, returning an OK status code if there are 
+	    no processing errors.
+	2)  Ignore the file but pass it through without processing, 
+	    returning an OK status code.
+	3)  Reject the file and return an ERR status code.  It is the
+	    responsibility of the application to notify operations staff
+	    if recovery is needed.
+
+The last case is the reason DTS requires a delivery directory to be
+specified for each site, even if the delivery app fails the file is left
+in a location that will not interfere with continued DTS operation and
+where a local operator can recover in an appropriate manner.
+
+
+
+2.7) Transferring Multiple Files
+
+	In most cases DTS will be required to transfer a single file at
+a time, however when presented with a directory (e.g. as the argument to
+the DTSQ application) it is able to recursively transfer the directory
+to a remote site.  The directory is considered a single queue item and
+the transfer is done as a single transaction with the remote site.
+
+	Multiple files may also be queued in a single invocation of the
+DTSQ task.  By default these will be processed sequentially and the files
+treated as if they had been queued individually, however an option exists
+to "bundle" the files in a tarball in cases where a single large transfer
+may be more efficient than many small transfers.  There is no provision
+to bundle multiple items in the queue for a single transfer.
+
+	In the most common observing modes we expect single-file transfers
+to be the norm.
+
+
+
+3)  DES/SISPI Interfaces to DTS
+
+3.1)  SISPI-DTS Interface During Data Acquisition
+
+	SISPI interfaces with the DTS at the time data are being acquired,
+both for DES and Community data.  At some point in the data-taking process,
+SISPI is required to invoke the DTSQ command to submit the image to DTS
+for transport.  This invocation MUST supply the queue name to be used and
+the full path of the file to be transported.  For example,
+
+	dtsq -q des -f /data/des/nite032/image001.fits
+
+The '-f' fast-mode flag can be made a default if requested, additional
+DTSQ flags may also be specified if desired (e.g. to add parameter strings).
+The exact form of the command will be determined by agreement between
+NOAO and DES at the time the system is deployed and configured.
+
+
+Discussion:
+
+	In order to distinguish DES data from Community data and guarantee
+the proper routing and data rights, some unique method of identifying an
+image as belonging to either group MUST be agreed to by both the SISPI and
+DTS developers.  The CTIO Director is planning to reserve a proposal ID of
+the form "2011B-0001", "2012A-0001" etc, where the "-0001" identifies the
+file as belonging to DES, and is one method of tagging FITS data (via the
+PROPID keyword).  SISPI may also choose to send a summary manifest file
+(or some other non-FITS data) to mark the end of an observing night or a
+change of programs during split nights, in this case a PROPID keyword is
+not adequate and the only true means of distinguishing the file is via
+the queue to which it was submitted.
+
+	NOAO will supply the ingest application to be used to remediate
+headers and add necessary archiving keywords.  This task could theoretically
+determine the data routing from a FITS file PROPID keyword, however it would
+have no means of processing a general text file (e.g. the nightly manifest)
+and would have to rely on the named queue to determine the data routing.
+There is also the issue of what to do in case of a conflict between the
+named queue and a PROPID that doesn't match expectations: Should the
+data be quarantined and require operator intervention before dataflow
+can be restored, or should it take the queue name or the PROPID as the
+authoritative identifier?
+
+	For these reasons, we believe the queue named by the invocation of
+the DTSQ task should define whether an image belongs to DES or is general
+Community use.	One means to accomplish this is to have separate observing
+environments for DES and community use:  In the simplest case the 'DES
+environment' would hardwire the queue name to ensure data are delivered
+only to DES, the 'Community environment' would similarly send data to a
+different queue.  This has the advantage that the observing environment
+could be customized for survey use and the community user wouldn't have
+to see nonessential displays.
+
+	We therefore propose that it be a SISPI responsibility to call 
+the DTSQ task with the appropriate queue name to ensure DES data are 
+delivered properly.   Decisions about whether e.g. "SN Survey data" need
+to be distinguished from "DES data" likewise fall within the DES Project:
+SISPI could designate a different queue for each class of data or the
+decision could be made that all data flow on the same queue and it is
+sorted on the receiving side at NCSA.  In either case, DTS provides data
+transport without making decisions about how to classify data.
+
+
+3.1.1)  SISPI Responsibilities in this Interface:
+
+	- Define the queues required for both DES and Community use.
+	- Determine a procedure to be used to ensure all data have
+	  been successfully transferred from the 'DES 3-Day Store' to DTS
+	- Determine a procedure to be used to recover failed transfers
+	  of data from the 'DES 3-Day Store' to DTS
+	- Determine actions to the taken in SISPI in the event of a
+	  DTS failure.
+
+3.1.2)  DTS Responsibilities in this Interface:
+
+	- Provide the DTSQ task and configuration file required to 
+	  interact with the CTIO DTS system
+	- Configure data paths for each required queue
+	- Optimize network parameters for each leg of data path
+	- Monitor and maintain dataflow from CTIO to DES
+
+3.1.3)  Still to be decided:
+
+	- Exact form of the DTSQ command that supplies all needed 
+	  parameters for DES and NOAO operational use.
+
+
+
+3.2)  DES-DTS Interface When Delivering Data
+
+	DTS interfaces with the DES pipeline at the time data are being 
+delivered in NCSA.  Following a successful transfer within the DTS queue,
+a copy of the file is placed in the specified 'delivery directory'.  
+
+	If a file cannot be placed in the delivery directory (it doesn't
+exist, there is a permissions problem, disk is full, etc) the processing
+on the queue is halted and an operator is notified.  In this case, data
+will continue to be transferred off the mountain and will fill the queue
+in La Serena.
+
+	If data can be copied to the delivery directory, the DTS system
+then invokes specified 'delivery application', giving at least the full path
+to the file in the delivery directory as an argument (other arguments may be
+specified as well).  The delivery application processes the file and returns
+either an OK status code, or an ERR code indicating a failure of some sort.
+In the event of an error, an operator is notified but since there is a safe
+copy of the image in the delivery directory, queue processing can continue.
+Data are next moved along the same queue for transport to Tucson.
+
+
+3.2.1)  DES Responsibilities in this Interface:
+
+	- Specify the machine and delivery directory to be used.
+	- Ensure adequate disk space is available in delivery directory
+	- Supply the delivery application and specify its usage
+	- Identify contact person to notify in case of delivery failure
+	- Specify delivery app failure recovery procedures
+	- Open necessary holes in network firewalls
+	- Install DTSD application/configuration on target machine
+
+3.2.2)  DTS Responsibilities in this Interface:
+
+	- Supply DTSD and needed configuration files
+	- Monitor and maintain dataflow from CTIO to DES
+	- Monitor and maintain dataflow from DES to Tucson
+
+3.2.3)  Still to be decided:
+
+	- Amount of working space required to operate DTS on NCSA machine
+	- Does interface handle failure modes as required?  If not, how?
+
+
+
+3.3)  Ad-hoc DTS Usage by DES
+
+	DTS may be used as a general-purpose data transport tool in ways
+not covered by this ICD.  NOAO can assist in setting up these networks
+but assumes no operational responsibility for them.
+
+	One expected use of such an ad-hoc network is in transporting
+PreCam survey data from CTIO to DES.  Our current understanding is that
+NOAO will not be archiving this data and so this datastream falls outside
+normal operations.  However, this survey provides some real-world testing
+of the DTS system and we see this as an opportunity to exercise DTS before
+final deployment for DECam.
+
+
+
+4)  Glossary
+
+The following terms and acronyms are used in this document:
+
+    SISPI
+    DES 3-Day Store
+    E2E
+
+    DTS Submission Site
+    Delivery Application
+    Delivery Directory
+    Ingest Application

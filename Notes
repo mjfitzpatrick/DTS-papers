@@ -1,0 +1,40 @@
+
+Agenda:
+	Technology choices (Sector/UDT, FDT, RBUDP, Hadoop)
+	Defining Transfer Loads
+	    Using baseline of 200 images, est compressed size for
+		raw DES images
+	    Estimate size of CommPipe reduced to be replicated
+	    DES nightly calibration back to Chile?
+	Required Testing 
+	    Current transfer speeds (CTIO-LaSerena, Chile-NCSA, Chile-Tuc,
+		and  NCSA-TUC -- in both direction)
+	    Bake-off testing of protocols
+	Requirements Definition
+	Project Scope and Schedule
+	Open Questions and Who Answers Them
+
+
+Open Questions:
+    -	How does DECam data get into the system from the telescope?
+    -	What does it mean to "deliver data to NCSA" (directory drop-off,
+	interface with a DB, trigger a pipeline, etc)?
+    -	How do we identify DES vs community image?
+    -	What are constraints on what we can do at NCSA (run a daemon, open
+	a firewall hole, etc)?  Who manages that (i.e. can we update s/w 
+	ourselves or wait on admin)?
+    -	How are data "delivered" to the Archive for ingestion?
+    -	If raw images move over separate system, does CommPipe replication
+	move over existing DCI?  Is transfer speed adequate?  Is there a
+	CP North and South?
+    -	What is the policy for catching up after network outage (i.e. 
+	oldest or newest images first?)?
+    -	Is there an evolution of this system to the rest of E2E?
+
+
+References:
+    UDT (UDP Data Transfer):     http://udt.sf.net
+    Sector:                      http://sector.sf.net
+    FDT (Fast Data Transfer):    http://monalisa.cern.ch/FDT/
+    RBUDP (Reliable Blast UDP):  http://www.evl.uic.edu/cavern/RBUDP/
+    Hadoop:                      http://hadoop.apache.org

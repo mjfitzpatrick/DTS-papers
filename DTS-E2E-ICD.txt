@@ -1,0 +1,308 @@
+
+
+		    DTS-E2E Interface Control Document
+
+			    May 24, 2011
+
+
+	The DTS system interfaces with the NOAO/SDM E2E system primarily
+in the telescope domes when data are acquired, and in the archive
+centers when transported data are delivered to an SDM site.  Delivery and
+interfaces to third party sites (e.g. NCSA as part of the DES data path)
+are discussed elsewhere.
+
+	At each interface in the DTS-E2E system, this document will describe
+the nature of the interface, requirements on the DTS system, requirements
+on the E2E system, and the expected interaction between components.
+Operational requirements / desiderata are also briefly discussed.
+
+
+
+1.) Primary DTS-E2E Interfaces
+==============================
+
+    In the normal flow of data from telescopes to archives, DTS and E2E will
+interface in the following three places in the data path:
+
+    1)  The data acquisition system, where a completed image file is
+	submitted for archive processing.
+
+    2)	The mountain cache systems that act as the central collection point
+	for data on the mountaintop.  At this stage, the iSTB task is
+	run to produce the first archival copy of the data that will be
+	moved through the system and ingested in the archive.  This is the 
+	only place where the file may be modified by the system.
+
+    3)	The archive sites, North and South.  Data are ingested into the 
+	archive and moved (Ed Note:  Is this true?) to their final location 
+	on the mass-storage system.
+
+These are software interfaces between systems, the human interfaces needed
+for monitoring and control are discussed below.
+
+
+
+1.1)  At the Dome (KPNO or CTIO)
+--------------------------------
+
+Description
+
+    The primary interface in the dome is the DTSQ application that submits
+a file (not necessarily an image) to DTS for transport.  This command
+is envisioned as being executed by a DHS 'postproc' script directly or
+from a "wrapper" script created by E2E that may perform other functions.
+The DTSQ command is of the form
+
+	dtsq [-q <qname>] [-f] [<options>] [-p <param>=<value>] /path/file
+
+    The -q flag is used to specify the transport queue and is optional
+when a default queue is configured for the machine.  The -f flag forks a
+child process to move the file to the DTSD at the mountain cache, allowing
+the caller to regain control quickly (<< 1sec).  Arbitrary param/values
+(e.g. "instrument=decam") may be specified on the command line and will be
+passed along the data path in the control file for use by some downstream
+delivery application.
+
+
+DTSQ Return Values:
+
+    On any error, the DTSQ command sets the 'status' return value to 1 
+(one), the path to file will be written to the queue's 'Recover' file in
+the DTS working directory.
+
+    If the '-f' option IS NOT used, the DTSQ task will return a 0 (zero) 
+upon a successful transfer of the file to the DTS machine managing the queue.
+A "token file" containing the details of the transfer will be left on the
+originating machine in the DTS working directory for the queue.
+
+    If the '-f' option IS used, a status of 0 (zero) is returned if the
+remote DTS daemon can be successfully contacted and is willing to accept
+the file, it does NOT indicate that the file was successfully transferred.
+Since the transfer to the remote machine is happening in a child process,
+the only indication that the transfer is complete is the 'token file' left
+in the DTSQ working directory.
+
+
+Failure Recovery Information:
+
+    The DTSQ '-R' option will automatically resubmit failed transports, 
+    i.e. it will read the 'Recover' file for the queue and resubmit them
+    to the named queue.  File paths are removed from the 'Recover' file once
+    successfully transferred, on error they remain in the file for later
+    recovery.  Example use:
+
+		% dtsq -q decam -R
+
+    The DTSQ '-V' option can be used to validate submissions already made
+    to the queue (i.e. print a report on what was submitted, what is left 
+    to recover, etc).  Example use:
+
+		% dtsq -q decam -V
+
+    In both cases the '-q' option is required to specify the queue to be
+    used.  If the default DTSQ configuration file is not being used, then
+    either the '-C' option or the DTSQ_CONFIG environment variable must
+    be defined.
+
+
+DTS Requirements:
+
+    -  The DTSQ binary must be installed on the submitting machine.
+    -  A DTSQ configuration file must be installed on the submitting 
+       machine either as "$HOME/.dtsq_config" for the account running the 
+       command, or in a public directory (e.g. /usr/local/lib) when the 
+       '-C' option is used.
+    -  Each queue to be used is properly defined in the configuration file.
+    -  The submitted file WILL NOT be changed, moved or deleted until DTSQ 
+       transfer is complete (i.e. until a token file (or recovery entry) is 
+       written to the working directory successfully).
+
+E2E Requirements:
+
+    -  SDM Ops is responsible for monitoring and recovering failed DTSQ
+       submissions.  
+
+    -  ?????
+
+
+
+1.2)  At the Mountain Cache
+---------------------------
+
+Description
+
+    The mountain cache is the first instance of a DTS Daemon in the data
+flow and provides a special "ingest" interface to a queue.  An ingest
+node is the only place where the data are allowed to be modified by the
+delivery application.  The file may be renamed by the delivery app, however
+the application is then REQUIRED to create a file named "<queue>.par"
+(where <queue> is the queue name) containing a line of the form
+
+		deliveryName = <new_name>
+
+Additional parameters that may be used by later nodes in the data path
+may be added to this parameter file as well.  This file MUST contain only
+"<keyword> = <value>" pairs, one per line.  Downstream delivery applications
+can make use of any of these parameters, files may be delivered using 
+either the original filename or one created by the ingest process.
+
+    Transferred files are written directly to the queue's spool directory,
+the delivery application is then executed and the transport control
+parameters (e.g. checksums, filesize, file name, supplemental parameters,
+etc) are recalculated before queue processing begins.
+
+
+Ingest Application Return Values:
+
+    The ingest application MUST return one of the following status codes:
+
+    0    Application completed successfully, processing should continue
+    1    Application encountered an error, however tranport may continue
+    2    Application encountered an error, transport of file suspended
+    3    Application encountered a fatal error, processing of queue stopped
+
+The ingest application will block processing of the file until it completes
+and assumes responsibility for returning the status code even if it creates
+a background job to do additional processing.  When a status code of 1
+(one) is returned, the DTS will log a processing error but will take no
+further error action.  What a status code of 2 (two) is returned, the
+current file will be marked as 'completed' and the transport of the next
+file in the queue will begin.  The contents of the spool directory will
+be left unchanged (aiding in later recovery of the), and the error will
+be logged.  A status code of 3 (three) is the most severe error and allows
+the delivery application to inform the DTS that processing of the queue
+should be suspended (e.g.  because further requests will similarly fail).
+In this case, the error is logged and the operator will be contacted
+(if one was designated in the config file).
+
+
+Failure Recovery Information:
+
+
+DTS Requirements:
+	
+    -  DTSD is operational on the mountain cache machine
+    -  sufficient storage is available to manage the DTS queue areas
+    -  A delivery application can be specified to operate on the file
+    -  Files are not required to be FITS images
+
+
+E2E Requirements:
+
+    -  ????
+
+
+1.3)  At an SDM Archive Site
+-----------------------------
+
+Description
+
+    The SDM archive site (La Serena or Tucson) can be either a 'transfer'
+or an 'endpoint' node in the queue data path, typically the only difference
+will be a site-dependent delivery application.  This application will
+execute on the delivered file and is expected to interface with the
+Archive systems to move the file to permanent mass-storage, register with
+the archive, etc.  As with
+
+
+Ingest Application Return Values:
+
+
+Failure Recovery Information:
+
+
+DTS Requirements:
+	
+	- DTSD is operational on the machine
+	- sufficient storage is available to manage the DTS queue areas
+	- A delivery application can be specified to operate on the file
+	- Files are not required to be FITS images
+
+E2E Requirements:
+
+
+
+2.)  Secondary DTS-E2E Interfaces
+=================================
+
+Description
+
+    At NCSA
+
+
+DTS Requirements:
+
+
+E2E Requirements:
+
+
+
+3.)  Operational DTS-E2E Interfaces
+===================================
+
+  Monitoring
+
+     DTS Requirements:
+
+     E2E Requirements:
+
+
+  Command & Control
+
+     DTS Requirements:
+
+     E2E Requirements:
+
+
+
+--------------------------------------------------------------------------------
+
+4.)  Delivery Application Interface
+===================================
+
+    A "Delivery Application" can be executed by the DTSD at each node in 
+    the data path.  This application expects at least one argument, the
+    full path to the file being delivered, however additional parameters
+    may be specified (see below).  The command is specified in the DTS
+    configuration file and is of the form:
+
+	/path/dtsapp $F [<params> .....]	# use original filename
+	/path/dtsapp $D [<params> .....]	# use delivered filename
+
+    Except for the initial "ingest" node, the delivery app executes on a
+    copy of the file and is free to do whatever it likes with the file.
+    The delivery application is responsible to deleting this file after
+    processing if necessary.  In the case of an ingest node, the file may
+    be modified;  the file may also be renamed provided that a parameter
+    file be produced containing a 'deliveryName' parameter containing the
+    new name of the file.
+
+
+    Return Values:
+
+	A zero status means the command executed successfully, a non-zero
+    value indicates an error occurred.  This is no way to determine exactly
+    what the error is without specifying a dictionary of return codes.
+
+
+    Allowed Macro substitutions.
+     
+        $F          path to delivered file (original filename)
+        $D          path to delivered file (delivered filename)
+        $S          object size (bytes)
+        $Q          name of delivery queue
+        $E          UT epoch at the time the object was queued
+        $SUM32      32-bit SYSV checksum
+        $CRC32      32-bit CRC checksum
+        $MD5        MD5 checksum
+        $FULL       full path to originating file
+        $ON         original filename (minus path)
+        $OP         original path to filename
+        $DN         delivery filename (minus path)
+        $DP         delivery path
+        $SP         path to filename on src host
+        $OH         originating host name
+      
+        $<param>    replaced with value of named param (or '')
+
+
